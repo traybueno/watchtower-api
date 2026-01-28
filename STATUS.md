@@ -66,6 +66,10 @@ WS   /v1/rooms/:code/ws     → WebSocket connection
 │   ├── wrangler.toml
 │   ├── ARCHITECTURE.md      # Full technical docs
 │   └── STATUS.md            # This file
+├── watchtower-sdk/          # @watchtower/sdk npm package ✅ NEW
+│   ├── src/index.ts         # Main SDK code
+│   ├── dist/                # Built output
+│   └── README.md            # Usage docs
 ├── watchtower-site/         # Landing page (Next.js)
 └── watchtower-test/         # Test playground (static HTML)
 ```
@@ -87,8 +91,9 @@ WS   /v1/rooms/:code/ws     → WebSocket connection
 ## ❌ Not Built Yet
 
 ### High Priority (MVP)
-- [ ] API key authentication for developers
-- [ ] Dashboard UI (Supabase Auth + Next.js)
+- [ ] **SDK package** ← BUILDING NOW
+- [ ] **Dashboard + Auth** ← NEXT (Option B)
+- [ ] **R2 Game Hosting** ← AFTER THAT (Option C)
 - [ ] D1 schema for users/games/keys
 - [ ] Rate limiting
 
@@ -150,3 +155,4 @@ cd ~/clawd/projects/watchtower-test && netlify deploy --prod --dir=.
 - WebSocket relay working
 - Test playground created and validated
 - Landing page live at watchtower.host
+- **SDK built** (`@watchtower/sdk`) — ready for npm publish
