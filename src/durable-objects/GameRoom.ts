@@ -7,17 +7,11 @@ interface RoomState {
   gameId: string
   hostId: string
   createdAt: number
-  players: Map<string, Player>
-}
-
-interface Session {
-  playerId: string
-  ws: WebSocket
+  players: Record<string, Player>
 }
 
 export class GameRoom {
   private state: DurableObjectState
-  private sessions: Map<string, Session> = new Map()
   private roomState: RoomState | null = null
 
   constructor(state: DurableObjectState) {
@@ -27,10 +21,7 @@ export class GameRoom {
     this.state.blockConcurrencyWhile(async () => {
       const stored = await this.state.storage.get<RoomState>('roomState')
       if (stored) {
-        this.roomState = {
-          ...stored,
-          players: new Map(Object.entries(stored.players || {}))
-        }
+        this.roomState = stored
       }
     })
   }
@@ -71,7 +62,7 @@ export class GameRoom {
       gameId,
       hostId,
       createdAt: Date.now(),
-      players: new Map([[hostId, { id: hostId, joinedAt: Date.now() }]])
+      players: { [hostId]: { id: hostId, joinedAt: Date.now() } }
     }
     
     await this.saveState()
@@ -88,8 +79,8 @@ export class GameRoom {
       gameId: this.roomState.gameId,
       hostId: this.roomState.hostId,
       createdAt: this.roomState.createdAt,
-      playerCount: this.roomState.players.size,
-      players: Array.from(this.roomState.players.values())
+      playerCount: Object.keys(this.roomState.players).length,
+      players: Object.values(this.roomState.players)
     })
   }
 
@@ -100,15 +91,15 @@ export class GameRoom {
 
     const { playerId } = await request.json() as { playerId: string }
     
-    if (!this.roomState.players.has(playerId)) {
-      this.roomState.players.set(playerId, { id: playerId, joinedAt: Date.now() })
+    if (!this.roomState.players[playerId]) {
+      this.roomState.players[playerId] = { id: playerId, joinedAt: Date.now() }
       await this.saveState()
       
-      // Broadcast player joined
+      // Broadcast player joined to WebSocket clients
       this.broadcast({
         type: 'player_joined',
         playerId,
-        playerCount: this.roomState.players.size
+        playerCount: Object.keys(this.roomState.players).length
       }, playerId)
     }
 
@@ -116,7 +107,7 @@ export class GameRoom {
       success: true,
       gameId: this.roomState.gameId,
       hostId: this.roomState.hostId,
-      players: Array.from(this.roomState.players.values())
+      players: Object.values(this.roomState.players)
     })
   }
 
@@ -134,26 +125,23 @@ export class GameRoom {
     const pair = new WebSocketPair()
     const [client, server] = Object.values(pair)
 
-    // Accept and set up server socket
+    // Accept with hibernation API - tag with playerId
     this.state.acceptWebSocket(server, [playerId])
     
-    // Track session
-    this.sessions.set(playerId, { playerId, ws: server })
-    
-    // Ensure player is in room
-    if (!this.roomState.players.has(playerId)) {
-      this.roomState.players.set(playerId, { id: playerId, joinedAt: Date.now() })
+    // Ensure player is in room state
+    if (!this.roomState.players[playerId]) {
+      this.roomState.players[playerId] = { id: playerId, joinedAt: Date.now() }
       await this.saveState()
     }
 
-    // Send welcome message
+    // Send welcome message immediately
     server.send(JSON.stringify({
       type: 'connected',
       playerId,
       room: {
         gameId: this.roomState.gameId,
         hostId: this.roomState.hostId,
-        players: Array.from(this.roomState.players.values())
+        players: Object.values(this.roomState.players)
       }
     }))
 
@@ -161,12 +149,13 @@ export class GameRoom {
     this.broadcast({
       type: 'player_joined',
       playerId,
-      playerCount: this.roomState.players.size
+      playerCount: Object.keys(this.roomState.players).length
     }, playerId)
 
     return new Response(null, { status: 101, webSocket: client })
   }
 
+  // Called by Cloudflare when a WebSocket message is received
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer) {
     const tags = this.state.getTags(ws)
     const playerId = tags[0]
@@ -176,10 +165,9 @@ export class GameRoom {
     try {
       const data = JSON.parse(message as string)
       
-      // Handle different message types
       switch (data.type) {
         case 'broadcast':
-          // Broadcast to all players (including sender unless excluded)
+          // Broadcast to all players
           this.broadcast({
             type: 'message',
             from: playerId,
@@ -203,7 +191,7 @@ export class GameRoom {
           break
           
         default:
-          // Pass through as broadcast
+          // Unknown type - broadcast as message
           this.broadcast({
             type: 'message',
             from: playerId,
@@ -215,24 +203,24 @@ export class GameRoom {
     }
   }
 
+  // Called by Cloudflare when a WebSocket closes
   async webSocketClose(ws: WebSocket, code: number, reason: string) {
     const tags = this.state.getTags(ws)
     const playerId = tags[0]
     
     if (playerId && this.roomState) {
-      this.sessions.delete(playerId)
-      this.roomState.players.delete(playerId)
+      delete this.roomState.players[playerId]
       await this.saveState()
       
       // Broadcast player left
       this.broadcast({
         type: 'player_left',
         playerId,
-        playerCount: this.roomState.players.size
+        playerCount: Object.keys(this.roomState.players).length
       })
       
-      // If room is empty, clean up (optional: add timeout)
-      if (this.roomState.players.size === 0) {
+      // If room is empty, clean up
+      if (Object.keys(this.roomState.players).length === 0) {
         await this.state.storage.deleteAll()
         this.roomState = null
       }
@@ -241,40 +229,43 @@ export class GameRoom {
 
   async webSocketError(ws: WebSocket, error: unknown) {
     console.error('WebSocket error:', error)
-    ws.close(1011, 'Internal error')
   }
 
+  // Broadcast using hibernation API - getWebSockets() returns all connected sockets
   private broadcast(message: object, excludePlayerId?: string) {
     const json = JSON.stringify(message)
-    for (const [playerId, session] of this.sessions) {
-      if (playerId !== excludePlayerId) {
+    const sockets = this.state.getWebSockets()
+    
+    for (const ws of sockets) {
+      const tags = this.state.getTags(ws)
+      const socketPlayerId = tags[0]
+      
+      if (socketPlayerId !== excludePlayerId) {
         try {
-          session.ws.send(json)
+          ws.send(json)
         } catch (e) {
-          // Socket closed, clean up
-          this.sessions.delete(playerId)
+          console.error('Failed to send to socket:', e)
         }
       }
     }
   }
 
   private sendTo(playerId: string, message: object) {
-    const session = this.sessions.get(playerId)
-    if (session) {
+    const sockets = this.state.getWebSockets(playerId)
+    const json = JSON.stringify(message)
+    
+    for (const ws of sockets) {
       try {
-        session.ws.send(JSON.stringify(message))
+        ws.send(json)
       } catch (e) {
-        this.sessions.delete(playerId)
+        console.error('Failed to send to socket:', e)
       }
     }
   }
 
   private async saveState() {
     if (this.roomState) {
-      await this.state.storage.put('roomState', {
-        ...this.roomState,
-        players: Object.fromEntries(this.roomState.players)
-      })
+      await this.state.storage.put('roomState', this.roomState)
     }
   }
 }
