@@ -8,11 +8,20 @@ interface RoomState {
   hostId: string
   createdAt: number
   players: Record<string, Player>
+  /** Per-player custom state (position, animation, etc.) */
+  playerStates: Record<string, Record<string, unknown>>
+  /** Shared game state (host-controlled) */
+  gameState: Record<string, unknown>
 }
 
 export class GameRoom {
   private state: DurableObjectState
   private roomState: RoomState | null = null
+  
+  // Throttle player state broadcasts
+  private playerStateDirty = false
+  private broadcastInterval: ReturnType<typeof setInterval> | null = null
+  private readonly SYNC_INTERVAL_MS = 50 // 20Hz
 
   constructor(state: DurableObjectState) {
     this.state = state
@@ -22,8 +31,35 @@ export class GameRoom {
       const stored = await this.state.storage.get<RoomState>('roomState')
       if (stored) {
         this.roomState = stored
+        // Ensure new fields exist for backwards compatibility
+        if (!this.roomState.playerStates) this.roomState.playerStates = {}
+        if (!this.roomState.gameState) this.roomState.gameState = {}
       }
     })
+    
+    // Start periodic broadcast of player states
+    this.startBroadcastInterval()
+  }
+
+  private startBroadcastInterval() {
+    if (this.broadcastInterval) return
+    
+    this.broadcastInterval = setInterval(() => {
+      if (this.playerStateDirty && this.roomState) {
+        this.broadcast({
+          type: 'players_sync',
+          players: this.roomState.playerStates
+        })
+        this.playerStateDirty = false
+      }
+    }, this.SYNC_INTERVAL_MS)
+  }
+
+  private stopBroadcastInterval() {
+    if (this.broadcastInterval) {
+      clearInterval(this.broadcastInterval)
+      this.broadcastInterval = null
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -62,7 +98,9 @@ export class GameRoom {
       gameId,
       hostId,
       createdAt: Date.now(),
-      players: { [hostId]: { id: hostId, joinedAt: Date.now() } }
+      players: { [hostId]: { id: hostId, joinedAt: Date.now() } },
+      playerStates: {},
+      gameState: {}
     }
     
     await this.saveState()
@@ -134,15 +172,19 @@ export class GameRoom {
       await this.saveState()
     }
 
-    // Send welcome message immediately
+    // Send welcome message with full state
     server.send(JSON.stringify({
       type: 'connected',
       playerId,
       room: {
+        code: '', // Filled by caller
         gameId: this.roomState.gameId,
         hostId: this.roomState.hostId,
-        players: Object.values(this.roomState.players)
-      }
+        players: Object.values(this.roomState.players),
+        playerCount: Object.keys(this.roomState.players).length
+      },
+      playerStates: this.roomState.playerStates,
+      gameState: this.roomState.gameState
     }))
 
     // Broadcast join to others
@@ -166,8 +208,48 @@ export class GameRoom {
       const data = JSON.parse(message as string)
       
       switch (data.type) {
+        case 'player_state':
+          // Update this player's state
+          this.roomState.playerStates[playerId] = data.state
+          this.playerStateDirty = true
+          // Also send individual update for lower latency
+          this.broadcast({
+            type: 'player_state_update',
+            playerId,
+            state: data.state
+          }, playerId)
+          break
+          
+        case 'game_state':
+          // Only host can set game state
+          if (playerId === this.roomState.hostId) {
+            this.roomState.gameState = data.state
+            await this.saveState()
+            // Broadcast to all including sender (confirmation)
+            this.broadcast({
+              type: 'game_state_sync',
+              state: data.state
+            })
+          }
+          break
+          
+        case 'transfer_host':
+          // Only host can transfer
+          if (playerId === this.roomState.hostId && data.newHostId) {
+            // Verify new host is in room
+            if (this.roomState.players[data.newHostId]) {
+              this.roomState.hostId = data.newHostId
+              await this.saveState()
+              this.broadcast({
+                type: 'host_changed',
+                hostId: data.newHostId
+              })
+            }
+          }
+          break
+          
         case 'broadcast':
-          // Broadcast to all players
+          // Broadcast to all players (for one-off events)
           this.broadcast({
             type: 'message',
             from: playerId,
@@ -189,14 +271,6 @@ export class GameRoom {
         case 'ping':
           ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }))
           break
-          
-        default:
-          // Unknown type - broadcast as message
-          this.broadcast({
-            type: 'message',
-            from: playerId,
-            data
-          }, playerId)
       }
     } catch (e) {
       console.error('Failed to parse WebSocket message:', e)
@@ -209,21 +283,44 @@ export class GameRoom {
     const playerId = tags[0]
     
     if (playerId && this.roomState) {
+      const wasHost = playerId === this.roomState.hostId
+      
+      // Remove player
       delete this.roomState.players[playerId]
+      delete this.roomState.playerStates[playerId]
+      
+      const remainingPlayers = Object.keys(this.roomState.players)
+      
+      // If room is empty, clean up
+      if (remainingPlayers.length === 0) {
+        this.stopBroadcastInterval()
+        await this.state.storage.deleteAll()
+        this.roomState = null
+        return
+      }
+      
+      // Host migration if host left
+      if (wasHost && remainingPlayers.length > 0) {
+        // Pick the player who joined earliest as new host
+        const players = Object.values(this.roomState.players)
+        players.sort((a, b) => a.joinedAt - b.joinedAt)
+        this.roomState.hostId = players[0].id
+        
+        // Notify all players of host change
+        this.broadcast({
+          type: 'host_changed',
+          hostId: this.roomState.hostId
+        })
+      }
+      
       await this.saveState()
       
       // Broadcast player left
       this.broadcast({
         type: 'player_left',
         playerId,
-        playerCount: Object.keys(this.roomState.players).length
+        playerCount: remainingPlayers.length
       })
-      
-      // If room is empty, clean up
-      if (Object.keys(this.roomState.players).length === 0) {
-        await this.state.storage.deleteAll()
-        this.roomState = null
-      }
     }
   }
 
