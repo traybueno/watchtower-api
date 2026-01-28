@@ -1,0 +1,32 @@
+name = "watchtower-api"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+
+# D1 Database for metadata (users, games, sessions)
+[[d1_databases]]
+binding = "DB"
+database_name = "watchtower-db"
+database_id = "48370393-26b8-4482-a007-ce5ccd7f0139"
+
+# KV for player saves (fast key-value)
+[[kv_namespaces]]
+binding = "SAVES"
+id = "ace14130d77a43879e2eb3a5c20ac9d0"
+
+# R2 for game file storage (enable in dashboard first)
+# [[r2_buckets]]
+# binding = "GAMES"
+# bucket_name = "watchtower-games"
+
+# Durable Objects for multiplayer rooms
+[durable_objects]
+bindings = [
+  { name = "ROOMS", class_name = "GameRoom" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GameRoom"]
+
+[vars]
+ENVIRONMENT = "production"
