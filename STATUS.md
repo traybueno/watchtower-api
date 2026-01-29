@@ -1,6 +1,6 @@
 # Watchtower — Project Status
 
-> **Last Updated:** 2026-01-28  
+> **Last Updated:** 2026-01-29  
 > **Ed's Quick Reference** — Always read this first when working on Watchtower
 
 ---
@@ -9,150 +9,172 @@
 
 ### API (Cloudflare Workers)
 - **URL:** https://watchtower-api.watchtower-host.workers.dev/
-- **Subdomain:** watchtower-host.workers.dev
-- **Account ID:** f683ff16449a42773d744b6dc4f5099d
+- **Status:** ✅ Production
 
-### Endpoints Working
+### Endpoints
 ```
-GET  /                      → Health check
-POST /v1/saves/:key         → Save data (requires X-Player-ID, X-Game-ID)
+# Health
+GET  /                      → Health check + version
+
+# Cloud Saves
+POST /v1/saves/:key         → Save data
 GET  /v1/saves/:key         → Load data
 GET  /v1/saves              → List saves
 DELETE /v1/saves/:key       → Delete save
+
+# Multiplayer Rooms
 POST /v1/rooms              → Create room (returns 4-letter code)
 GET  /v1/rooms/:code        → Room info
 POST /v1/rooms/:code/join   → Join room
 WS   /v1/rooms/:code/ws     → WebSocket connection
+
+# Analytics (NEW)
+GET  /v1/stats              → Game-wide stats (online, DAU, MAU, rooms, etc.)
+POST /v1/stats/track        → Track events (session_start/end, room_join/leave)
+GET  /v1/stats/player       → Current player's stats
+
+# Internal (Dashboard → API)
+POST /internal/keys         → Register API key
+DELETE /internal/keys/:key  → Revoke API key
+GET  /internal/keys/:key    → Check key exists
 ```
 
 ### Sites
 | Site | URL | Platform |
 |------|-----|----------|
-| Landing Page | https://watchtower.host | Netlify |
-| Test Playground | https://watchtower-test-playground.netlify.app | Netlify |
+| Main Site | https://watchtower.host | Netlify (Next.js) |
+| Dashboard | https://watchtower.host/dashboard | Netlify (Next.js) |
+| Docs | https://watchtower.host/docs | Netlify (Next.js) |
+
+---
+
+## 📦 SDK (@watchtower/sdk)
+
+**Status:** ✅ Built, tested, ready
+
+```javascript
+import { Watchtower } from '@watchtower/sdk'
+
+const wt = new Watchtower({ gameId: 'my-game', apiKey: 'wt_...' })
+
+// Cloud Saves
+await wt.save('progress', { level: 5 })
+const data = await wt.load('progress')
+
+// Multiplayer
+const room = await wt.createRoom()
+await wt.joinRoom('ABCD')
+
+// Analytics (NEW)
+const stats = await wt.getStats()       // { online, today, monthly, total, rooms... }
+const me = await wt.getPlayerStats()    // { firstSeen, sessions, playtime }
+await wt.trackSessionStart()
+```
 
 ---
 
 ## 🏗️ Infrastructure
 
 ### Cloudflare Resources
-| Resource | Name | ID |
-|----------|------|-----|
-| Worker | watchtower-api | — |
-| D1 Database | watchtower-db | `48370393-26b8-4482-a007-ce5ccd7f0139` |
-| KV Namespace | SAVES | `ace14130d77a43879e2eb3a5c20ac9d0` |
-| Durable Object | GameRoom | (managed) |
-| R2 Bucket | — | Not created yet (need to enable in dashboard) |
+| Resource | Name | Notes |
+|----------|------|-------|
+| Worker | watchtower-api | Main API |
+| D1 Database | watchtower-db | Users/projects (via Supabase for now) |
+| KV Namespace | SAVES | Game saves + stats + API keys |
+| Durable Object | GameRoom | Real-time multiplayer rooms |
 
 ### Other Services
-| Service | Details |
+| Service | Purpose |
 |---------|---------|
-| Supabase | Project: watchtower-api, URL: https://pnqewixndboyxooxpibg.supabase.co |
-| Domain | watchtower.host (GoDaddy → Netlify) |
-| Netlify | Team: Honor Thy Error, CLI authenticated |
+| Supabase | Auth + project/user database |
+| Netlify | Site hosting |
+| GoDaddy | Domain (watchtower.host) |
 
 ---
 
-## 📁 Project Locations
+## 💰 Pricing Tiers
 
-```
-~/clawd/projects/
-├── watchtower-api/          # Cloudflare Worker (this project)
-│   ├── src/
-│   │   ├── index.ts         # Hono app entry
-│   │   ├── routes/saves.ts  # /v1/saves/* 
-│   │   ├── routes/rooms.ts  # /v1/rooms/*
-│   │   └── durable-objects/GameRoom.ts
-│   ├── wrangler.toml
-│   ├── ARCHITECTURE.md      # Full technical docs
-│   └── STATUS.md            # This file
-├── watchtower-sdk/          # @watchtower/sdk npm package ✅ NEW
-│   ├── src/index.ts         # Main SDK code
-│   ├── dist/                # Built output
-│   └── README.md            # Usage docs
-├── watchtower-site/         # Landing page (Next.js)
-└── watchtower-test/         # Test playground (static HTML)
-```
+| Tier | Price | Games | MAU | Storage | Hosting |
+|------|-------|-------|-----|---------|---------|
+| Free | $0 | 1 | 50 | 100MB | Auto URL (abc123.watchtower.host) |
+| Hobby | $10 | 10 | 1,000 | 10GB | Custom subdomain |
+| Indie | $25 | ∞ | 10,000 | 50GB | Custom domain |
+| Studio | $50 | ∞ | 50,000 | 200GB | + Team accounts |
 
 ---
 
-## ✅ Validated (2026-01-28)
+## ✅ What Works (Validated)
 
-- [x] Cloud saves work (KV) — saved "tomato", retrieved it
-- [x] Room creation — generates 4-letter codes
-- [x] Room joining — multiple devices in same room
-- [x] WebSocket relay — real-time position sync
-- [x] Chat broadcast — messages between clients
-- [x] Player join/leave events — notifications work
-- [x] Durable Objects hibernation — cost-efficient scaling
+- [x] Cloud saves (KV-backed)
+- [x] Room creation (4-letter codes)
+- [x] Room joining + WebSocket relay
+- [x] Player state sync (20Hz)
+- [x] Game state (host-controlled)
+- [x] Broadcast messages
+- [x] Host migration
+- [x] SDK (JS/TS)
+- [x] Dashboard with live stats
+- [x] Stats API (online, DAU, MAU, rooms)
+- [x] Auth flow (Supabase)
+- [x] Project creation/management
 
 ---
 
 ## ❌ Not Built Yet
 
-### High Priority (MVP)
-- [ ] **SDK package** ← BUILDING NOW
-- [ ] **Dashboard + Auth** ← NEXT (Option B)
-- [ ] **R2 Game Hosting** ← AFTER THAT (Option C)
-- [ ] D1 schema for users/games/keys
-- [ ] Rate limiting
+### Next Up
+- [ ] **Web game hosting** ← NEXT (drag folder → get URL)
+- [ ] R2 bucket for game files
+- [ ] Subdomain routing for hosted games
 
 ### Medium Priority
-- [ ] R2 game hosting (drag folder → get URL)
-- [ ] SDK packages (@watchtower/sdk for JS)
-- [ ] Room settings (max players, private rooms)
-- [ ] Better error handling
+- [ ] Billing (Stripe)
+- [ ] Usage enforcement (rate limits)
+- [ ] Unity SDK wrapper
+- [ ] Godot SDK wrapper
 
 ### Lower Priority
-- [ ] Unity SDK
-- [ ] Godot SDK
 - [ ] Custom domains for games
-- [ ] Billing (Stripe)
-- [ ] Usage analytics
+- [ ] Room settings (max players, private)
+- [ ] Leaderboards (maybe)
 
 ---
 
 ## 🔧 Dev Commands
 
 ```bash
+# API
 cd ~/clawd/projects/watchtower-api
+npm run dev        # Local dev
+npx wrangler deploy  # Deploy to prod
+npx wrangler tail  # View logs
 
-# Local dev
-npm run dev
+# Site
+cd ~/clawd/projects/watchtower-site
+npm run dev        # Local dev
+npx netlify deploy --prod  # Deploy to prod
 
-# Deploy to production
-npm run deploy
-
-# View logs
-npm run tail
-
-# Check KV data
-wrangler kv key list --namespace-id=ace14130d77a43879e2eb3a5c20ac9d0 --remote
-
-# Deploy test playground
-cd ~/clawd/projects/watchtower-test && netlify deploy --prod --dir=.
+# SDK
+cd ~/clawd/projects/watchtower-sdk
+npm run build      # Build SDK
+node test-stats.mjs  # Test stats API
 ```
 
 ---
 
-## 🧠 Key Decisions Made
+## 📝 Recent Changes
 
-1. **Cloudflare over Fly.io/Railway** — Edge-native, Durable Objects perfect for rooms
-2. **Hono over Express** — Lightweight, edge-first framework
-3. **KV for saves** — Simple key-value, global replication
-4. **Durable Objects for rooms** — Strong consistency, WebSocket hibernation
-5. **Anonymous player IDs (for now)** — Client provides ID, no auth yet
-6. **4-letter room codes** — Easy to share verbally
-
----
-
-## 📝 Changelog
+### 2026-01-29
+- **Performance fix:** Middleware no longer checks auth on public pages (3-5x faster)
+- **Stats API:** Added `/v1/stats`, `/v1/stats/track`, `/v1/stats/player`
+- **SDK:** Added `getStats()`, `getPlayerStats()`, `trackSessionStart/End()`
+- **Dashboard:** Live stats cards (fetches from API every 30s)
+- **Pricing:** Added free tier, web hosting at all tiers
+- **Color scheme:** Changed from amber to emerald green
+- **About page:** Created with story, how it works, infrastructure
 
 ### 2026-01-28
-- Initial API deployed to Cloudflare Workers
-- Cloud saves (KV) working
-- Multiplayer rooms (Durable Objects) working
-- WebSocket relay working
-- Test playground created and validated
-- Landing page live at watchtower.host
-- **SDK built** (`@watchtower/sdk`) — ready for npm publish
+- Initial API deployed
+- Cloud saves + multiplayer rooms working
+- Landing page + dashboard live
+- SDK built and tested

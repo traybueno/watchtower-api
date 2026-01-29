@@ -13,10 +13,10 @@ database_id = "48370393-26b8-4482-a007-ce5ccd7f0139"
 binding = "SAVES"
 id = "ace14130d77a43879e2eb3a5c20ac9d0"
 
-# R2 for game file storage (enable in dashboard first)
-# [[r2_buckets]]
-# binding = "GAMES"
-# bucket_name = "watchtower-games"
+# R2 for game file storage
+[[r2_buckets]]
+binding = "GAMES"
+bucket_name = "watchtower-games"
 
 # Durable Objects for multiplayer rooms
 [durable_objects]

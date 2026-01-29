@@ -3,6 +3,7 @@ import { cors } from 'hono/cors'
 import { savesRouter } from './routes/saves'
 import { roomsRouter } from './routes/rooms'
 import { statsRouter } from './routes/stats'
+import { hostingRouter } from './routes/hosting'
 import { internalRouter } from './routes/internal'
 import { authMiddleware } from './middleware/auth'
 import { GameRoom } from './durable-objects/GameRoom'
@@ -13,6 +14,7 @@ export interface Env {
   DB: D1Database
   SAVES: KVNamespace
   ROOMS: DurableObjectNamespace
+  GAMES: R2Bucket
   ENVIRONMENT: string
   INTERNAL_SECRET: string
 }
@@ -44,6 +46,7 @@ app.use('/v1/*', authMiddleware)
 app.route('/v1/saves', savesRouter)
 app.route('/v1/rooms', roomsRouter)
 app.route('/v1/stats', statsRouter)
+app.route('/v1/hosting', hostingRouter)
 
 // 404 handler
 app.notFound((c) => {
