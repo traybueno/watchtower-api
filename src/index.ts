@@ -14,7 +14,7 @@ export interface Env {
   DB: D1Database
   SAVES: KVNamespace
   ROOMS: DurableObjectNamespace
-  GAMES: R2Bucket
+  GAMES?: R2Bucket  // Optional until R2 is enabled
   ENVIRONMENT: string
   INTERNAL_SECRET: string
 }

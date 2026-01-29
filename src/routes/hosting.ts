@@ -6,6 +6,14 @@ export const hostingRouter = new Hono<{ Bindings: Env }>()
 // Max upload size: 100MB
 const MAX_UPLOAD_SIZE = 100 * 1024 * 1024
 
+// Check if R2 is configured
+hostingRouter.use('*', async (c, next) => {
+  if (!c.env.GAMES) {
+    return c.json({ error: 'Hosting not enabled - R2 storage not configured' }, 503)
+  }
+  await next()
+})
+
 // POST /v1/hosting/upload - Upload a game build (ZIP or individual files)
 hostingRouter.post('/upload', async (c) => {
   const gameId = c.get('gameId' as never) as string
@@ -43,7 +51,7 @@ hostingRouter.post('/upload', async (c) => {
       const key = `${prefix}${file.name}`
       const arrayBuffer = await file.arrayBuffer()
       
-      await c.env.GAMES.put(key, arrayBuffer, {
+      await c.env.GAMES!.put(key, arrayBuffer, {
         httpMetadata: {
           contentType: getMimeType(file.name)
         }
@@ -94,7 +102,7 @@ hostingRouter.post('/upload', async (c) => {
     
     for (const file of files) {
       const key = `${prefix}${file.path}`
-      await c.env.GAMES.put(key, file.data, {
+      await c.env.GAMES!.put(key, file.data, {
         httpMetadata: {
           contentType: getMimeType(file.path)
         }
@@ -138,7 +146,7 @@ hostingRouter.get('/status', async (c) => {
   
   // List files to get stats
   const prefix = `games/${projectId}/`
-  const list = await c.env.GAMES.list({ prefix, limit: 1000 })
+  const list = await c.env.GAMES!.list({ prefix, limit: 1000 })
   
   const totalSize = list.objects.reduce((sum, obj) => sum + (obj.size || 0), 0)
   
@@ -162,10 +170,10 @@ hostingRouter.delete('/', async (c) => {
   let deleted = 0
   
   do {
-    const list = await c.env.GAMES.list({ prefix, cursor, limit: 1000 })
+    const list = await c.env.GAMES!.list({ prefix, cursor, limit: 1000 })
     
     for (const obj of list.objects) {
-      await c.env.GAMES.delete(obj.key)
+      await c.env.GAMES!.delete(obj.key)
       deleted++
     }
     
