@@ -3,22 +3,7 @@ import type { Env } from '../index'
 
 export const savesRouter = new Hono<{ Bindings: Env }>()
 
-// Middleware: require player and game IDs
-savesRouter.use('*', async (c, next) => {
-  const playerId = c.req.header('X-Player-ID')
-  const gameId = c.req.header('X-Game-ID')
-  
-  if (!playerId) {
-    return c.json({ error: 'X-Player-ID header required' }, 400)
-  }
-  if (!gameId) {
-    return c.json({ error: 'X-Game-ID header required' }, 400)
-  }
-  
-  c.set('playerId' as never, playerId)
-  c.set('gameId' as never, gameId)
-  await next()
-})
+// Auth middleware handles playerId/gameId validation and sets them in context
 
 // Helper to build KV key
 function buildKey(gameId: string, playerId: string, saveKey: string): string {

@@ -12,12 +12,9 @@ function getRoomStub(env: Env, roomCode: string): DurableObjectStub {
 
 // POST /v1/rooms — Create a new room
 roomsRouter.post('/', async (c) => {
-  const gameId = c.req.header('X-Game-ID')
-  const playerId = c.req.header('X-Player-ID')
-  
-  if (!gameId || !playerId) {
-    return c.json({ error: 'X-Game-ID and X-Player-ID headers required' }, 400)
-  }
+  // Auth middleware sets these from API key validation
+  const gameId = c.get('gameId' as never) as string
+  const playerId = c.get('playerId' as never) as string
   
   // Generate unique room code
   const roomCode = generateRoomCode()
@@ -59,11 +56,7 @@ roomsRouter.get('/:code', async (c) => {
 // POST /v1/rooms/:code/join — Join a room (HTTP, for initial join)
 roomsRouter.post('/:code/join', async (c) => {
   const roomCode = c.req.param('code').toUpperCase()
-  const playerId = c.req.header('X-Player-ID')
-  
-  if (!playerId) {
-    return c.json({ error: 'X-Player-ID header required' }, 400)
-  }
+  const playerId = c.get('playerId' as never) as string
   
   const stub = getRoomStub(c.env, roomCode)
   const response = await stub.fetch(new Request('http://internal/join', {
@@ -83,10 +76,11 @@ roomsRouter.post('/:code/join', async (c) => {
 // GET /v1/rooms/:code/ws — WebSocket upgrade
 roomsRouter.get('/:code/ws', async (c) => {
   const roomCode = c.req.param('code').toUpperCase()
-  const playerId = c.req.header('X-Player-ID') || c.req.query('playerId')
+  // Auth middleware sets playerId, but also check query param for WebSocket URL compatibility
+  const playerId = c.get('playerId' as never) as string || c.req.query('playerId')
   
   if (!playerId) {
-    return c.json({ error: 'X-Player-ID header or playerId query param required' }, 400)
+    return c.json({ error: 'playerId required' }, 400)
   }
   
   // Check for WebSocket upgrade

@@ -2,6 +2,9 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { savesRouter } from './routes/saves'
 import { roomsRouter } from './routes/rooms'
+import { statsRouter } from './routes/stats'
+import { internalRouter } from './routes/internal'
+import { authMiddleware } from './middleware/auth'
 import { GameRoom } from './durable-objects/GameRoom'
 
 export { GameRoom }
@@ -11,6 +14,7 @@ export interface Env {
   SAVES: KVNamespace
   ROOMS: DurableObjectNamespace
   ENVIRONMENT: string
+  INTERNAL_SECRET: string
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -32,9 +36,14 @@ app.get('/', (c) => {
   })
 })
 
-// API routes
+// Internal routes (dashboard → API)
+app.route('/internal', internalRouter)
+
+// Public API routes (require API key auth)
+app.use('/v1/*', authMiddleware)
 app.route('/v1/saves', savesRouter)
 app.route('/v1/rooms', roomsRouter)
+app.route('/v1/stats', statsRouter)
 
 // 404 handler
 app.notFound((c) => {

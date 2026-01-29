@@ -30,3 +30,4 @@ new_sqlite_classes = ["GameRoom"]
 
 [vars]
 ENVIRONMENT = "production"
+# INTERNAL_SECRET is set via `wrangler secret put INTERNAL_SECRET`
