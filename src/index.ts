@@ -2,18 +2,21 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { savesRouter } from './routes/saves'
 import { roomsRouter } from './routes/rooms'
+import { syncRouter } from './routes/sync'
 import { statsRouter } from './routes/stats'
 import { hostingRouter } from './routes/hosting'
 import { internalRouter } from './routes/internal'
 import { authMiddleware } from './middleware/auth'
 import { GameRoom } from './durable-objects/GameRoom'
+import { SyncRoom } from './durable-objects/sync-room'
 
-export { GameRoom }
+export { GameRoom, SyncRoom }
 
 export interface Env {
   DB: D1Database
   SAVES: KVNamespace
   ROOMS: DurableObjectNamespace
+  SYNC_ROOMS: DurableObjectNamespace
   GAMES?: R2Bucket  // Optional until R2 is enabled
   ENVIRONMENT: string
   INTERNAL_SECRET: string
@@ -45,6 +48,7 @@ app.route('/internal', internalRouter)
 app.use('/v1/*', authMiddleware)
 app.route('/v1/saves', savesRouter)
 app.route('/v1/rooms', roomsRouter)
+app.route('/v1/sync', syncRouter)
 app.route('/v1/stats', statsRouter)
 app.route('/v1/hosting', hostingRouter)
 

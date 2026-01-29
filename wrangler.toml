@@ -13,20 +13,25 @@ database_id = "48370393-26b8-4482-a007-ce5ccd7f0139"
 binding = "SAVES"
 id = "ace14130d77a43879e2eb3a5c20ac9d0"
 
-# R2 for game file storage (enable R2 in dashboard first, then uncomment)
-# [[r2_buckets]]
-# binding = "GAMES"
-# bucket_name = "watchtower-games"
+# R2 for game file storage
+[[r2_buckets]]
+binding = "GAMES"
+bucket_name = "watchtower-games"
 
 # Durable Objects for multiplayer rooms
 [durable_objects]
 bindings = [
-  { name = "ROOMS", class_name = "GameRoom" }
+  { name = "ROOMS", class_name = "GameRoom" },
+  { name = "SYNC_ROOMS", class_name = "SyncRoom" }
 ]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["GameRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["SyncRoom"]
 
 [vars]
 ENVIRONMENT = "production"
