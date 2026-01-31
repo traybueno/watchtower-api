@@ -3,6 +3,12 @@
  * 
  * A lightweight room for automatic state synchronization.
  * Much simpler than the full Room DO - just broadcasts state updates.
+ * 
+ * Features:
+ * - Server timestamps on all messages (for client interpolation)
+ * - Tick-based sequencing (for ordering)
+ * - Player count broadcasting
+ * - Late-joiner full state sync
  */
 
 interface PlayerConnection {
@@ -10,12 +16,14 @@ interface PlayerConnection {
   playerId: string
   state: Record<string, unknown>
   joinedAt: number
+  lastTick: number
 }
 
 export class SyncRoom {
   private state: DurableObjectState
   private players: Map<WebSocket, PlayerConnection> = new Map()
   private playerStates: Map<string, Record<string, unknown>> = new Map()
+  private tick: number = 0  // Server tick counter for ordering
 
   constructor(state: DurableObjectState) {
     this.state = state
@@ -60,7 +68,8 @@ export class SyncRoom {
       ws: server,
       playerId,
       state: {},
-      joinedAt: Date.now()
+      joinedAt: Date.now(),
+      lastTick: this.tick
     }
     this.players.set(server, connection)
 
@@ -72,17 +81,23 @@ export class SyncRoom {
       }
     }
     
-    if (Object.keys(fullState).length > 0) {
-      server.send(JSON.stringify({
-        type: 'full_state',
-        state: fullState
-      }))
-    }
+    // Always send welcome message with server info
+    server.send(JSON.stringify({
+      type: 'welcome',
+      playerId,
+      tick: this.tick,
+      serverTime: Date.now(),
+      playerCount: this.players.size,
+      state: Object.keys(fullState).length > 0 ? fullState : undefined
+    }))
 
     // Notify others about new player
     this.broadcast({
       type: 'join',
-      playerId
+      playerId,
+      playerCount: this.players.size,
+      tick: this.tick,
+      serverTime: Date.now()
     }, server)
 
     // Handle messages
@@ -115,19 +130,38 @@ export class SyncRoom {
       switch (message.type) {
         case 'state':
           // Player state update
+          this.tick++  // Increment server tick
           connection.state = message.data
+          connection.lastTick = this.tick
           this.playerStates.set(connection.playerId, message.data)
           
-          // Broadcast to others
+          // Broadcast to others with server timestamp for interpolation
           this.broadcast({
             type: 'state',
             playerId: connection.playerId,
-            data: message.data
+            data: message.data,
+            tick: this.tick,
+            serverTime: Date.now()
           }, ws)
           break
 
         case 'ping':
-          ws.send(JSON.stringify({ type: 'pong', time: Date.now() }))
+          ws.send(JSON.stringify({ 
+            type: 'pong', 
+            time: Date.now(),
+            tick: this.tick,
+            playerCount: this.players.size
+          }))
+          break
+
+        case 'broadcast':
+          this.broadcast({
+            type: 'message',
+            from: connection.playerId,
+            data: message.data,
+            tick: this.tick,
+            serverTime: Date.now()
+          }, ws)
           break
       }
     } catch (e) {
@@ -145,10 +179,13 @@ export class SyncRoom {
     this.players.delete(ws)
     this.playerStates.delete(playerId)
 
-    // Notify others
+    // Notify others with updated player count
     this.broadcast({
       type: 'leave',
-      playerId
+      playerId,
+      playerCount: this.players.size,
+      tick: this.tick,
+      serverTime: Date.now()
     })
   }
 
