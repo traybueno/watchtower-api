@@ -74,10 +74,11 @@ export class SyncRoom {
     this.players.set(server, connection)
 
     // Send current state to new player (late joiner sync)
+    // Strip private fields from other players' states
     const fullState: Record<string, Record<string, unknown>> = {}
     for (const [id, state] of this.playerStates) {
       if (id !== playerId) {
-        fullState[id] = state
+        fullState[id] = this.stripPrivate(state)
       }
     }
     
@@ -135,11 +136,14 @@ export class SyncRoom {
           connection.lastTick = this.tick
           this.playerStates.set(connection.playerId, message.data)
           
+          // Strip private fields before broadcasting to others
+          const publicData = this.stripPrivate(message.data)
+          
           // Broadcast to others with server timestamp for interpolation
           this.broadcast({
             type: 'state',
             playerId: connection.playerId,
-            data: message.data,
+            data: publicData,
             tick: this.tick,
             serverTime: Date.now()
           }, ws)
@@ -201,5 +205,28 @@ export class SyncRoom {
         }
       }
     }
+  }
+
+  /**
+   * Strip private fields from state before broadcasting to other players.
+   * Any field starting with '_' or named '_private' is stripped.
+   * This allows players to have secret state (cards in hand, fog of war, etc.)
+   */
+  private stripPrivate(data: Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = {}
+    
+    for (const [key, value] of Object.entries(data)) {
+      // Skip private fields (starting with _ or named _private)
+      if (key.startsWith('_')) continue
+      
+      // Recursively strip private fields from nested objects
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        result[key] = this.stripPrivate(value as Record<string, unknown>)
+      } else {
+        result[key] = value
+      }
+    }
+    
+    return result
   }
 }
