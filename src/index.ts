@@ -6,17 +6,20 @@ import { syncRouter } from './routes/sync'
 import { statsRouter } from './routes/stats'
 import { hostingRouter } from './routes/hosting'
 import { internalRouter } from './routes/internal'
+import { connectRouter } from './routes/connect'
 import { authMiddleware } from './middleware/auth'
 import { GameRoom } from './durable-objects/GameRoom'
 import { SyncRoom } from './durable-objects/sync-room'
+import { Room } from './durable-objects/Room'
 
-export { GameRoom, SyncRoom }
+export { GameRoom, SyncRoom, Room }
 
 export interface Env {
   DB: D1Database
   SAVES: KVNamespace
   ROOMS: DurableObjectNamespace
   SYNC_ROOMS: DurableObjectNamespace
+  SIMPLE_ROOMS: DurableObjectNamespace
   GAMES?: R2Bucket  // Optional until R2 is enabled
   ENVIRONMENT: string
   INTERNAL_SECRET: string
@@ -51,6 +54,7 @@ app.route('/v1/rooms', roomsRouter)
 app.route('/v1/sync', syncRouter)
 app.route('/v1/stats', statsRouter)
 app.route('/v1/hosting', hostingRouter)
+app.route('/v1/connect', connectRouter)  // New simplified API
 
 // 404 handler
 app.notFound((c) => {
