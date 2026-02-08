@@ -1,7 +1,7 @@
 /**
  * Connect Routes - Simple room connections
  * 
- * This is the new simplified API. Just connect to a room and go.
+ * Simplified API for multiplayer rooms. No auth required.
  * Room is created on first connection if it doesn't exist.
  */
 

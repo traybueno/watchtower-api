@@ -30,8 +30,25 @@ hostingRouter.post('/upload', async (c) => {
       return c.json({ error: 'No files provided' }, 400)
     }
     
-    // Check for index.html
-    const hasIndex = files.some(f => f.name === 'index.html' || f.name.endsWith('/index.html'))
+    // Get file paths and strip common folder prefix (e.g., "my-game/index.html" -> "index.html")
+    let filePaths = files.map(f => f.name)
+    
+    // Check if all files share a common prefix folder
+    if (filePaths.length > 0) {
+      const firstSlash = filePaths[0]?.indexOf('/')
+      if (firstSlash > 0) {
+        const commonPrefix = filePaths[0].substring(0, firstSlash + 1)
+        const allSharePrefix = filePaths.every(p => p.startsWith(commonPrefix))
+        
+        if (allSharePrefix) {
+          // Strip the common folder prefix
+          filePaths = filePaths.map(p => p.substring(commonPrefix.length))
+        }
+      }
+    }
+    
+    // Check for index.html (after stripping prefix)
+    const hasIndex = filePaths.some(f => f === 'index.html' || f.endsWith('/index.html'))
     if (!hasIndex) {
       return c.json({ error: 'Missing index.html - upload must include an index.html file' }, 400)
     }
@@ -42,30 +59,32 @@ hostingRouter.post('/upload', async (c) => {
       return c.json({ error: `Upload too large: ${(totalSize / 1024 / 1024).toFixed(1)}MB (max 100MB)` }, 400)
     }
     
-    // Upload all files to R2
+    // Upload all files to R2 (using normalized paths)
     const prefix = `games/${projectId}/`
     const uploaded: string[] = []
     
-    for (const file of files) {
-      // Preserve directory structure from file name
-      const key = `${prefix}${file.name}`
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const normalizedPath = filePaths[i]
+      const key = `${prefix}${normalizedPath}`
       const arrayBuffer = await file.arrayBuffer()
       
       await c.env.GAMES!.put(key, arrayBuffer, {
         httpMetadata: {
-          contentType: getMimeType(file.name)
+          contentType: getMimeType(normalizedPath)
         }
       })
       
-      uploaded.push(file.name)
+      uploaded.push(normalizedPath)
     }
     
-    // Generate subdomain if not exists
+    // Get or create subdomain
     let subdomain = await getSubdomain(c.env, projectId)
     if (!subdomain) {
       subdomain = generateSubdomain()
-      await setSubdomain(c.env, projectId, subdomain)
     }
+    // Always write to both Supabase and KV (ensures KV is populated on redeploy)
+    await setSubdomain(c.env, projectId, subdomain)
     
     return c.json({
       success: true,
@@ -109,12 +128,13 @@ hostingRouter.post('/upload', async (c) => {
       })
     }
     
-    // Generate subdomain if not exists
+    // Get or create subdomain
     let subdomain = await getSubdomain(c.env, projectId)
     if (!subdomain) {
       subdomain = generateSubdomain()
-      await setSubdomain(c.env, projectId, subdomain)
     }
+    // Always write to both Supabase and KV (ensures KV is populated on redeploy)
+    await setSubdomain(c.env, projectId, subdomain)
     
     const totalSize = files.reduce((sum, f) => sum + f.data.byteLength, 0)
     
@@ -134,9 +154,19 @@ hostingRouter.post('/upload', async (c) => {
 hostingRouter.get('/status', async (c) => {
   const projectId = c.get('projectId' as never) as string
   
+  console.log(`[STATUS] projectId=${projectId}`)
   const subdomain = await getSubdomain(c.env, projectId)
+  console.log(`[STATUS] subdomain=${subdomain}`)
+  
+  // List files to check if currently published
+  const prefix = `games/${projectId}/`
+  const list = await c.env.GAMES!.list({ prefix, limit: 1000 })
+  const hasFiles = list.objects.length > 0
+  console.log(`[STATUS] Found ${list.objects.length} files, hasFiles=${hasFiles}`)
   
   if (!subdomain) {
+    // Never published - no permanent URL yet
+    console.log(`[STATUS] No subdomain yet (never published)`)
     return c.json({
       enabled: false,
       url: null,
@@ -144,16 +174,13 @@ hostingRouter.get('/status', async (c) => {
     })
   }
   
-  // List files to get stats
-  const prefix = `games/${projectId}/`
-  const list = await c.env.GAMES!.list({ prefix, limit: 1000 })
-  
   const totalSize = list.objects.reduce((sum, obj) => sum + (obj.size || 0), 0)
   
+  // Return permanent subdomain even if unpublished (no files)
   return c.json({
-    enabled: true,
+    enabled: hasFiles,  // Only "enabled" if files exist
     url: `https://${subdomain}.watchtower.host`,
-    subdomain,
+    subdomain,          // Always return the permanent subdomain
     files: list.objects.length,
     size: totalSize,
     truncated: list.truncated
@@ -164,6 +191,10 @@ hostingRouter.get('/status', async (c) => {
 hostingRouter.delete('/', async (c) => {
   const projectId = c.get('projectId' as never) as string
   
+  // Get subdomain before deleting
+  const subdomain = await getSubdomain(c.env, projectId)
+  console.log(`[DELETE] projectId=${projectId}, subdomain=${subdomain}`)
+  
   // List and delete all files
   const prefix = `games/${projectId}/`
   let cursor: string | undefined
@@ -171,6 +202,7 @@ hostingRouter.delete('/', async (c) => {
   
   do {
     const list = await c.env.GAMES!.list({ prefix, cursor, limit: 1000 })
+    console.log(`[DELETE] Found ${list.objects.length} files to delete`)
     
     for (const obj of list.objects) {
       await c.env.GAMES!.delete(obj.key)
@@ -180,23 +212,36 @@ hostingRouter.delete('/', async (c) => {
     cursor = list.truncated ? list.cursor : undefined
   } while (cursor)
   
-  // Clear subdomain mapping
-  await clearSubdomain(c.env, projectId)
+  // Clear KV cache only - keep Supabase record for permanent URL
+  if (subdomain) {
+    console.log(`[DELETE] Clearing KV cache for ${subdomain} (keeping permanent URL)`)
+    await clearKvCache(c.env, subdomain)
+  }
+  
+  // Subdomain should still exist in Supabase (permanent)
+  const checkSubdomain = await getSubdomain(c.env, projectId)
+  console.log(`[DELETE] After unpublish, subdomain=${checkSubdomain} (should be preserved)`)
   
   return c.json({
     success: true,
-    deleted
+    deleted,
+    subdomain: subdomain || null,
+    // URL is preserved, just files are removed
+    urlPreserved: checkSubdomain !== null
   })
 })
 
-// POST /v1/hosting/subdomain - Set custom subdomain (paid feature)
+// POST /v1/hosting/subdomain - Set custom subdomain
 hostingRouter.post('/subdomain', async (c) => {
   const projectId = c.get('projectId' as never) as string
   const { subdomain } = await c.req.json() as { subdomain: string }
   
-  // Validate subdomain format
-  if (!subdomain || !/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/i.test(subdomain)) {
-    return c.json({ error: 'Invalid subdomain format. Use lowercase letters, numbers, and hyphens (3-63 chars)' }, 400)
+  // Validate subdomain format (3-63 chars, alphanumeric + hyphens, no leading/trailing hyphen)
+  if (!subdomain || subdomain.length < 3 || subdomain.length > 63) {
+    return c.json({ error: 'Subdomain must be 3-63 characters' }, 400)
+  }
+  if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/i.test(subdomain)) {
+    return c.json({ error: 'Use letters, numbers, hyphens (no leading/trailing hyphen)' }, 400)
   }
   
   const normalized = subdomain.toLowerCase()
@@ -241,21 +286,96 @@ function generateSubdomain(): string {
 }
 
 async function getSubdomain(env: Env, projectId: string): Promise<string | null> {
-  return await env.SAVES.get(`project:${projectId}:subdomain`)
+  // Query Supabase for subdomain
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    console.error('Supabase not configured')
+    return null
+  }
+  
+  try {
+    const response = await fetch(
+      `${env.SUPABASE_URL}/rest/v1/hosted_sites?project_id=eq.${projectId}&select=subdomain`,
+      {
+        headers: {
+          'apikey': env.SUPABASE_SERVICE_ROLE_KEY,
+          'Authorization': `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`
+        }
+      }
+    )
+    
+    if (response.ok) {
+      const rows = await response.json() as Array<{ subdomain: string }>
+      return rows[0]?.subdomain || null
+    }
+  } catch (e) {
+    console.error('Failed to get subdomain:', e)
+  }
+  
+  return null
 }
 
 async function setSubdomain(env: Env, projectId: string, subdomain: string): Promise<void> {
-  // Bidirectional mapping for fast lookups
-  await env.SAVES.put(`project:${projectId}:subdomain`, subdomain)
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error('Supabase not configured')
+  }
+  
+  // Upsert to Supabase
+  const response = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/hosted_sites`,
+    {
+      method: 'POST',
+      headers: {
+        'apikey': env.SUPABASE_SERVICE_ROLE_KEY,
+        'Authorization': `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates'
+      },
+      body: JSON.stringify({
+        project_id: projectId,
+        subdomain: subdomain,
+        updated_at: new Date().toISOString()
+      })
+    }
+  )
+  
+  if (!response.ok) {
+    const error = await response.text()
+    throw new Error(`Failed to set subdomain: ${error}`)
+  }
+  
+  // Also write to KV for fast edge serving
   await env.SAVES.put(`subdomain:${subdomain}`, projectId)
 }
 
 async function clearSubdomain(env: Env, projectId: string): Promise<void> {
+  // Get subdomain first
   const subdomain = await getSubdomain(env, projectId)
+  
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error('Supabase not configured')
+  }
+  
+  // Delete from Supabase
+  await fetch(
+    `${env.SUPABASE_URL}/rest/v1/hosted_sites?project_id=eq.${projectId}`,
+    {
+      method: 'DELETE',
+      headers: {
+        'apikey': env.SUPABASE_SERVICE_ROLE_KEY,
+        'Authorization': `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`
+      }
+    }
+  )
+  
+  // Clean up KV
   if (subdomain) {
-    await env.SAVES.delete(`project:${projectId}:subdomain`)
     await env.SAVES.delete(`subdomain:${subdomain}`)
   }
+}
+
+// Clear KV cache only - keeps Supabase record (for permanent URLs)
+async function clearKvCache(env: Env, subdomain: string): Promise<void> {
+  await env.SAVES.delete(`subdomain:${subdomain}`)
 }
 
 function getMimeType(filename: string): string {

@@ -1,28 +1,20 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
-import { savesRouter } from './routes/saves'
-import { roomsRouter } from './routes/rooms'
-import { syncRouter } from './routes/sync'
-import { statsRouter } from './routes/stats'
 import { hostingRouter } from './routes/hosting'
-import { internalRouter } from './routes/internal'
 import { connectRouter } from './routes/connect'
 import { authMiddleware } from './middleware/auth'
-import { GameRoom } from './durable-objects/GameRoom'
-import { SyncRoom } from './durable-objects/sync-room'
 import { Room } from './durable-objects/Room'
 
-export { GameRoom, SyncRoom, Room }
+// Only export Room (the one we actually use)
+export { Room }
 
 export interface Env {
-  DB: D1Database
   SAVES: KVNamespace
-  ROOMS: DurableObjectNamespace
-  SYNC_ROOMS: DurableObjectNamespace
   SIMPLE_ROOMS: DurableObjectNamespace
-  GAMES?: R2Bucket  // Optional until R2 is enabled
+  GAMES?: R2Bucket
   ENVIRONMENT: string
-  INTERNAL_SECRET: string
+  SUPABASE_URL?: string
+  SUPABASE_SERVICE_ROLE_KEY?: string
 }
 
 const app = new Hono<{ Bindings: Env }>()
@@ -38,23 +30,18 @@ app.use('*', cors({
 app.get('/', (c) => {
   return c.json({
     name: 'Watchtower API',
-    version: '0.1.0',
+    version: '1.0.0',
     status: 'ok',
     docs: 'https://watchtower.host/docs'
   })
 })
 
-// Internal routes (dashboard → API)
-app.route('/internal', internalRouter)
+// Multiplayer rooms (no auth required - uses gameId from SDK)
+app.route('/v1/connect', connectRouter)
 
-// Public API routes (require API key auth)
-app.use('/v1/*', authMiddleware)
-app.route('/v1/saves', savesRouter)
-app.route('/v1/rooms', roomsRouter)
-app.route('/v1/sync', syncRouter)
-app.route('/v1/stats', statsRouter)
+// Hosting API (requires API key)
+app.use('/v1/hosting/*', authMiddleware)
 app.route('/v1/hosting', hostingRouter)
-app.route('/v1/connect', connectRouter)  // New simplified API
 
 // 404 handler
 app.notFound((c) => {
