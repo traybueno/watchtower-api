@@ -234,7 +234,8 @@ hostingRouter.delete('/', async (c) => {
 // POST /v1/hosting/subdomain - Set custom subdomain
 hostingRouter.post('/subdomain', async (c) => {
   const projectId = c.get('projectId' as never) as string
-  const { subdomain } = await c.req.json() as { subdomain: string }
+  const body = await c.req.json() as { subdomain: string, oldSubdomain?: string }
+  const { subdomain, oldSubdomain: clientOldSubdomain } = body
   
   // Validate subdomain format (3-63 chars, alphanumeric + hyphens, no leading/trailing hyphen)
   if (!subdomain || subdomain.length < 3 || subdomain.length > 63) {
@@ -258,13 +259,19 @@ hostingRouter.post('/subdomain', async (c) => {
     return c.json({ error: 'This subdomain is already taken' }, 400)
   }
   
-  // Get old subdomain to clean up
-  const oldSubdomain = await getSubdomain(c.env, projectId)
+  // Get old subdomain to clean up (from Supabase, with client fallback)
+  const supabaseOldSubdomain = await getSubdomain(c.env, projectId)
+  const oldSubdomain = supabaseOldSubdomain || clientOldSubdomain
+  
+  console.log(`[SUBDOMAIN] Changing ${oldSubdomain} -> ${normalized} for project ${projectId}`)
+  
+  // Delete old KV entry so old URL returns 404
   if (oldSubdomain && oldSubdomain !== normalized) {
+    console.log(`[SUBDOMAIN] Deleting KV entry for old subdomain: ${oldSubdomain}`)
     await c.env.SAVES.delete(`subdomain:${oldSubdomain}`)
   }
   
-  // Set new subdomain
+  // Set new subdomain (writes to Supabase + KV)
   await setSubdomain(c.env, projectId, normalized)
   
   return c.json({
