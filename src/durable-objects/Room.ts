@@ -11,6 +11,8 @@
  * - Player tracking with metadata
  * - Auto host assignment
  * - Server timestamps + ticks for ordering
+ * - Event history (ring buffer of last 50 events)
+ * - Player kick (host only)
  */
 
 interface Player {
@@ -25,12 +27,22 @@ interface Connection {
   player: Player
 }
 
+interface HistoryEvent {
+  type: string
+  serverTime: number
+  tick: number
+  [key: string]: unknown
+}
+
+const MAX_HISTORY_EVENTS = 50
+
 export class Room {
   private state: DurableObjectState
   private connections: Map<WebSocket, Connection> = new Map()
   private players: Map<string, Player> = new Map()
   private hostId: string = ''
   private tick: number = 0
+  private eventHistory: HistoryEvent[] = []
 
   constructor(state: DurableObjectState) {
     this.state = state
@@ -52,6 +64,13 @@ export class Room {
     }
 
     return new Response('Not found', { status: 404 })
+  }
+
+  private addToHistory(event: HistoryEvent) {
+    this.eventHistory.push(event)
+    if (this.eventHistory.length > MAX_HISTORY_EVENTS) {
+      this.eventHistory.shift()
+    }
   }
 
   private handleWebSocket(request: Request, url: URL): Response {
@@ -96,18 +115,19 @@ export class Room {
       this.hostId = playerId
     }
 
-    // Send welcome message
+    // Send welcome message with recent events
     server.send(JSON.stringify({
       type: 'welcome',
       playerId,
       hostId: this.hostId,
       players: Array.from(this.players.values()),
+      recentEvents: this.eventHistory,
       tick: this.tick,
       serverTime: Date.now()
     }))
 
-    // Notify others
-    this.broadcast({
+    // Create join event
+    const joinEvent: HistoryEvent = {
       type: 'join',
       playerId,
       name,
@@ -116,7 +136,13 @@ export class Room {
       playerCount: this.players.size,
       tick: this.tick,
       serverTime: Date.now()
-    }, server)
+    }
+
+    // Add to history
+    this.addToHistory(joinEvent)
+
+    // Notify others
+    this.broadcast(joinEvent, server)
 
     // Handle messages
     server.addEventListener('message', (event) => {
@@ -139,19 +165,23 @@ export class Room {
       this.tick++
 
       switch (msg.type) {
-        case 'broadcast':
-          // Send to everyone except sender
-          this.broadcast({
+        case 'broadcast': {
+          const msgEvent: HistoryEvent = {
             type: 'message',
             from: conn.player.id,
             data: msg.data,
             tick: this.tick,
             serverTime: Date.now()
-          }, ws)
+          }
+          // Add to history
+          this.addToHistory(msgEvent)
+          // Send to everyone except sender
+          this.broadcast(msgEvent, ws)
           break
+        }
 
         case 'direct':
-          // Send to specific player
+          // Send to specific player (not added to history)
           if (msg.to) {
             this.sendTo(msg.to, {
               type: 'direct',
@@ -160,6 +190,71 @@ export class Room {
               tick: this.tick,
               serverTime: Date.now()
             })
+          }
+          break
+
+        case 'kick':
+          // Only host can kick
+          if (conn.player.id !== this.hostId) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'Only the host can kick players',
+              tick: this.tick,
+              serverTime: Date.now()
+            }))
+            break
+          }
+
+          const targetId = msg.playerId
+          const reason = msg.reason
+
+          // Find and close the target's connection
+          for (const [targetWs, targetConn] of this.connections) {
+            if (targetConn.player.id === targetId) {
+              const kickEvent: HistoryEvent = {
+                type: 'kicked',
+                playerId: targetId,
+                reason,
+                tick: this.tick,
+                serverTime: Date.now()
+              }
+
+              // Add to history
+              this.addToHistory(kickEvent)
+
+              // Tell the kicked player first
+              try {
+                targetWs.send(JSON.stringify(kickEvent))
+              } catch {}
+
+              // Broadcast to everyone else
+              this.broadcast(kickEvent, targetWs)
+
+              // Remove from tracking
+              this.connections.delete(targetWs)
+              this.players.delete(targetId)
+
+              // Close connection
+              try {
+                targetWs.close(1000, reason || 'Kicked by host')
+              } catch {}
+
+              // Reassign host if kicked player was host (shouldn't happen, but safety)
+              if (this.hostId === targetId) {
+                const firstPlayer = this.players.keys().next().value
+                this.hostId = firstPlayer || ''
+                if (this.hostId) {
+                  this.broadcast({
+                    type: 'host_changed',
+                    hostId: this.hostId,
+                    tick: this.tick,
+                    serverTime: Date.now()
+                  })
+                }
+              }
+
+              break
+            }
           }
           break
 
@@ -200,14 +295,20 @@ export class Room {
       }
     }
 
-    // Notify others
-    this.broadcast({
+    // Create leave event
+    const leaveEvent: HistoryEvent = {
       type: 'leave',
       playerId: player.id,
       playerCount: this.players.size,
       tick: this.tick,
       serverTime: Date.now()
-    })
+    }
+
+    // Add to history
+    this.addToHistory(leaveEvent)
+
+    // Notify others
+    this.broadcast(leaveEvent)
   }
 
   private broadcast(message: unknown, exclude?: WebSocket) {
