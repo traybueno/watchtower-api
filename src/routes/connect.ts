@@ -143,7 +143,32 @@ connectRouter.get('/:roomId/ws', async (c) => {
   if (upgradeHeader !== 'websocket') {
     return c.json({ error: 'Expected WebSocket upgrade' }, 426)
   }
-  
+
+  // Rate limiting via KV (per-IP: 10/min, per-gameId: 100/min)
+  const clientIp = c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown'
+  const now = Math.floor(Date.now() / 60000) // minute bucket
+
+  const ipKey = `rl:ip:${clientIp}:${now}`
+  const gameKey = `rl:game:${gameId}:${now}`
+
+  const [ipCount, gameCount] = await Promise.all([
+    c.env.SAVES.get(ipKey).then(v => parseInt(v || '0', 10)),
+    c.env.SAVES.get(gameKey).then(v => parseInt(v || '0', 10)),
+  ])
+
+  if (ipCount >= 10) {
+    return c.json({ error: 'Rate limit exceeded (per-IP: 10 connections/min)', code: 'RATE_LIMIT' }, 429)
+  }
+  if (gameCount >= 100) {
+    return c.json({ error: 'Rate limit exceeded (per-game: 100 connections/min)', code: 'RATE_LIMIT' }, 429)
+  }
+
+  // Increment counters (fire-and-forget, 120s TTL to cover the minute window)
+  c.executionCtx.waitUntil(Promise.all([
+    c.env.SAVES.put(ipKey, String(ipCount + 1), { expirationTtl: 120 }),
+    c.env.SAVES.put(gameKey, String(gameCount + 1), { expirationTtl: 120 }),
+  ]))
+
   // CCU check (if gameId provided and CCU_COUNTERS configured)
   let ccuConnectionId: string | null = null
   let ccuCounterStub: DurableObjectStub | null = null
