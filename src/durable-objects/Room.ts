@@ -136,12 +136,19 @@ export class Room {
       this.roomId = roomIdParam
     }
 
+    const createRoom = url.searchParams.get('create') !== 'false'
     const name = url.searchParams.get('name') || undefined
     const metaStr = url.searchParams.get('meta')
     const meta = metaStr ? JSON.parse(metaStr) : undefined
 
-    // Handle reconnection - close old connection
+    // If create=false, reject if room is empty (no existing players)
     const existingWebSockets = this.state.getWebSockets()
+
+    if (!createRoom && existingWebSockets.length === 0) {
+      return Response.json({ error: 'Room does not exist', code: 'ROOM_NOT_FOUND' }, { status: 404 })
+    }
+
+    // Handle reconnection - close old connection
     for (const existingWs of existingWebSockets) {
       const attachment = existingWs.deserializeAttachment() as WsAttachment | null
       if (attachment?.player.id === playerId) {
