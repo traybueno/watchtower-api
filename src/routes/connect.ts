@@ -20,6 +20,13 @@ const CCU_LIMITS: Record<string, number> = {
   scale: 10000,
 }
 
+// Plan-based room limits per project
+const ROOM_LIMITS: Record<string, number> = {
+  free: 5,
+  pro: 50,
+  scale: 500,
+}
+
 // Helper to get Room DO stub by code
 function getRoomStub(env: Env, roomCode: string): DurableObjectStub {
   const id = env.SIMPLE_ROOMS.idFromName(roomCode.toUpperCase())
@@ -208,7 +215,10 @@ connectRouter.get('/:roomId/ws', async (c) => {
             // Call limits endpoint to record event and send notification
             fetch(`https://watchtower-api.watchtower-host.workers.dev/v1/limits/event`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Internal-Secret': c.env.SUPABASE_SERVICE_ROLE_KEY || '',
+              },
               body: JSON.stringify({
                 userId: projectInfo.userId,
                 projectId: projectInfo.projectId,
@@ -231,11 +241,39 @@ connectRouter.get('/:roomId/ws', async (c) => {
     }
   }
   
+  // Room creation limit check (per-project, tracked via KV)
+  if (gameId) {
+    const roomTrackKey = `room:${gameId}:${roomId}`
+    const existingRoom = await c.env.SAVES.get(roomTrackKey)
+
+    if (!existingRoom) {
+      // This is a new room — check if project is at limit
+      const roomCountKey = `roomcount:${gameId}`
+      const currentCount = parseInt(await c.env.SAVES.get(roomCountKey) || '0', 10)
+      const projectInfo = await getProjectFromGameId(c.env, gameId)
+      const plan = projectInfo?.plan || 'free'
+      const limit = ROOM_LIMITS[plan] || ROOM_LIMITS.free
+
+      if (currentCount >= limit) {
+        return c.json({
+          error: `Room limit reached (${currentCount}/${limit}). Upgrade your plan for more rooms.`,
+          code: 'ROOM_LIMIT',
+        }, 429)
+      }
+
+      // Track the new room (24h TTL for auto-cleanup of idle rooms)
+      c.executionCtx.waitUntil(Promise.all([
+        c.env.SAVES.put(roomTrackKey, '1', { expirationTtl: 86400 }),
+        c.env.SAVES.put(roomCountKey, String(currentCount + 1), { expirationTtl: 86400 }),
+      ]))
+    }
+  }
+
   // Forward to Durable Object (room created on first connection)
   const stub = getRoomStub(c.env, roomId)
   const url = new URL(c.req.url)
   url.pathname = '/ws'
-  
+
   // Pass roomId to the Room DO so it can track CCU cleanup
   url.searchParams.set('roomId', roomId)
   
